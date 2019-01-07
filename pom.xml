@@ -115,6 +115,14 @@
             <version>4.12</version>
             <scope>test</scope>
         </dependency>
+
+        <!-- mysql -->
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+            <version>6.0.6</version>
+        </dependency>
+
     </dependencies>
 
     <build>
