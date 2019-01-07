@@ -25,30 +25,25 @@
  */
 package org.wltea.analyzer.dic;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.nio.file.Path;
-import java.util.*;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-
 import org.apache.http.client.ClientProtocolException;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
+import org.apache.logging.log4j.Logger;
 import org.elasticsearch.common.io.PathUtils;
 import org.elasticsearch.common.logging.ESLoggerFactory;
 import org.elasticsearch.plugin.analysis.ik.AnalysisIkPlugin;
 import org.wltea.analyzer.cfg.Configuration;
-import org.apache.logging.log4j.Logger;
+
+import java.io.*;
+import java.nio.file.Path;
+import java.sql.*;
+import java.util.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 
 /**
@@ -154,6 +149,9 @@ public class Dictionary {
 					singleton.loadSuffixDict();
 					singleton.loadPrepDict();
 					singleton.loadStopWordDict();
+
+					// 执行更新词库的线程
+					new Thread(new HotDicReloadThread()).start();
 
 					if(cfg.isEnableRemoteDict()){
 						// 建立监控线程
@@ -378,6 +376,75 @@ public class Dictionary {
 		this.loadExtDict();
 		// 加载远程自定义词库
 		this.loadRemoteExtDict();
+		// 加载mysql词典
+		this.loadMySqlExtDict();
+	}
+
+	private static Properties prop = new Properties();
+
+	static {
+		try {
+			Class.forName("com.mysql.jdbc.Driver");
+		} catch (ClassNotFoundException e) {
+			logger.error("error", e);
+		}
+	}
+
+	/**
+	 * 从mysql中加载热更新词典
+	 */
+	private void loadMySqlExtDict(){
+		Connection connection = null;
+		Statement statement = null;
+		ResultSet resultSet = null;
+
+		try {
+			Path file = PathUtils.get(getDictRoot(),"jdbc-reload.properties");
+			prop.load(new FileInputStream(file.toFile()));
+
+			logger.info("-------jdbc-reload.properties-------");
+			for (Object key : prop.keySet()) {
+				logger.info("key:{}", prop.getProperty(String.valueOf(key)));
+			}
+
+			logger.info("------- query hot dict from mysql, sql:{}-------", prop.getProperty("jdbc.reload.sql"));
+
+			// 建立mysql连接
+			connection = DriverManager.getConnection(
+					prop.getProperty("jdbc.url"),
+					prop.getProperty("jdbc.user"),
+					prop.getProperty("jdbc.password")
+			);
+
+			// 执行查询
+			statement = connection.createStatement();
+			resultSet = statement.executeQuery(prop.getProperty("jdbc.reload.sql"));
+
+			// 循环输出查询啊结果,添加到Main.dict中去
+			while (resultSet.next()) {
+				String theWord = resultSet.getString("word");
+				logger.info("------hot word from mysql:{}------", theWord);
+
+				// 加到mainDict里面
+				_MainDict.fillSegment(theWord.trim().toCharArray());
+			}
+		} catch (Exception e) {
+			logger.error("error:{}", e);
+		} finally {
+			try {
+				if (resultSet != null) {
+					resultSet.close();
+				}
+				if (statement != null) {
+					statement.close();
+				}
+				if (connection != null) {
+					connection.close();
+				}
+			} catch (SQLException e){
+				logger.error("error", e);
+			}
+		}
 	}
 
 	/**
@@ -601,8 +668,62 @@ public class Dictionary {
 			}
 		}
 
+		// 加载停用词
+		this.loadMySqlStopwordDict();
 	}
 
+	/**
+	 * 从mysql中加载停用词
+	 */
+	private void loadMySqlStopwordDict(){
+		Connection conn = null;
+		Statement stmt = null;
+		ResultSet rs = null;
+
+		try {
+			Path file = PathUtils.get(getDictRoot(), "jdbc-reload.properties");
+			prop.load(new FileInputStream(file.toFile()));
+
+			logger.info("-------jdbc-reload.properties-------");
+			for(Object key : prop.keySet()) {
+				logger.info("-------key:{}", prop.getProperty(String.valueOf(key)));
+			}
+
+			logger.info("-------query hot stopword dict from mysql, sql:{}",props.getProperty("jdbc.reload.stopword.sql"));
+
+			conn = DriverManager.getConnection(
+					prop.getProperty("jdbc.url"),
+					prop.getProperty("jdbc.user"),
+					prop.getProperty("jdbc.password"));
+			stmt = conn.createStatement();
+			rs = stmt.executeQuery(prop.getProperty("jdbc.reload.stopword.sql"));
+
+			while(rs.next()) {
+				String theWord = rs.getString("word");
+				logger.info("------- hot stopword from mysql: {}", theWord);
+				_StopWords.fillSegment(theWord.trim().toCharArray());
+			}
+
+			Thread.sleep(Integer.valueOf(String.valueOf(prop.get("jdbc.reload.interval"))));
+		} catch (Exception e) {
+			logger.error("error", e);
+		} finally {
+			try {
+				if(rs != null) {
+					rs.close();
+				}
+				if(stmt != null) {
+					stmt.close();
+				}
+				if(conn != null) {
+					conn.close();
+				}
+			} catch (SQLException e){
+				logger.error("error:{}", e);
+			}
+
+		}
+	}
 	/**
 	 * 加载量词词典
 	 */
